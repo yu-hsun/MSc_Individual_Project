@@ -1,0 +1,94 @@
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from scipy.special import softmax
+import pandas as pd
+import numpy as np
+import datetime
+
+roberta = 'cardiffnlp/twitter-roberta-base-sentiment-latest'
+model = AutoModelForSequenceClassification.from_pretrained(roberta)
+tokenizer = AutoTokenizer.from_pretrained(roberta)
+
+#pre-process data and get sentiment scores
+def sentiments(x):
+    reddit = x.replace('\n',' ')
+    reddit_words = []
+    for i in reddit.split(' '):
+        if i.startswith('@') and len(i) > 1:
+            i = '@user'
+        elif i.startswith('http'):
+            i = 'http'
+        reddit_words.append(i)
+        
+    reddit_proc = ' '.join(reddit_words)
+    
+    #losd model and tokenizer    
+    lables = ['neg', 'neu', 'pos']
+    
+    ##sentiment analysis
+    encoded_reddit = tokenizer(reddit_proc, return_tensors='pt')
+    if len(encoded_reddit[0]) >= 513: #for this model the tokenizer can't >= 513
+        score = [0.0, 0.0, 0.0]
+    else:           
+        output = model(**encoded_reddit)
+        score = output[0][0].detach().numpy()
+        score = softmax(score)
+    
+    #return scores
+    result = {'lable': lables, 'score': score}
+    dfr = pd.DataFrame(result)
+    return dfr
+
+def get_day_means(df):
+#create new DataFrame dic
+    data_dict = {
+        'title': [],
+        'time': [],
+        'pos': [],
+        'neu': [],
+        'neg': []
+    }
+    
+    #put the scores, content and time into a dic
+    for i in range(len(df)):
+        sentiment = sentiments(df.iloc[i][0])
+        data_dict['title'].append(df.iloc[i][0])
+        data_dict['time'].append(df.iloc[i][1])
+        data_dict['pos'].append(sentiment.iloc[2][1])
+        data_dict['neu'].append(sentiment.iloc[1][1])
+        data_dict['neg'].append(sentiment.iloc[0][1])
+        print(i)
+    new_df = pd.DataFrame(data_dict)
+    
+    df = new_df
+    df['time']=pd.to_datetime(df['time'])
+    
+    #calculate the mean compound score of each day
+    i = 0
+    mean_lst = [] #mean of each day's comp    
+    y = datetime.datetime.now()-datetime.timedelta(days=i)
+    sd = datetime.datetime(y.year, y.month, y.day, 0, 0, 0)
+    ed = datetime.datetime(y.year, y.month, y.day, 23, 59, 59)
+    while sd>=np.min(df['time']): #compare the date to the earliest date of all reddit that have been captured
+        y = datetime.datetime.now()-datetime.timedelta(days=i) #separate each day
+        sd = datetime.datetime(y.year, y.month, y.day, 0, 0, 0)
+        ed = datetime.datetime(y.year, y.month, y.day, 23, 59, 59)
+        a = np.mean(df[(sd <= df['time']) & (df['time'] <= ed)]['pos'])
+        b = np.mean(df[(sd <= df['time']) & (df['time'] <= ed)]['neg'])
+        #compound scores:((pos-neg)+1)/2
+        c = ((a-b)+1)/2
+        mean_lst.append(c)
+        i+=1
+        
+    #finalise data arrangement    
+    mean_lst = [x for x in mean_lst if not np.isnan(x)]    
+    daylst = pd.to_datetime(df['time']).dt.date.unique().tolist()
+    mean_lst.reverse()
+    daylst.reverse()
+    return daylst, mean_lst, new_df
+
+df3 = pd.read_csv('english_reddit.csv')   
+daylst3, mean_lst3, new_df = get_day_means(df3)
+data = {'Date':daylst3,'Mean':mean_lst3}
+df_final = pd.DataFrame(data)
+new_df.to_csv('english_reddit_scores.csv', index=False)
+df_final.to_csv('english_reddit_meanscores.csv', index=False)
